@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>工具個別備註借還系統</title>
+    <title>工具批次借還系統(支援毀損手動輸入)</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <script src="https://unpkg.com/html5-qrcode"></script>
     <style>
@@ -46,19 +46,23 @@
             <select class="form-select" id="userId" onchange="onUserChange()">
                 <option value="">載入員工清單中...</option>
             </select>
-            
-            <div id="userBorrowedBox" class="user-status-box mt-2 d-none">
-                <div class="text-muted text-center fs-7">正在查詢該員名下工具...</div>
-            </div>
+            <div id="userBorrowedBox" class="user-status-box mt-2 d-none"></div>
         </div>
     </div>
 
     <div class="card mb-3 shadow-sm">
         <div class="card-body p-2 text-center">
             <div id="reader" class="mb-2"></div>
-            <div class="d-flex justify-content-between px-2">
+            <div class="d-flex justify-content-between px-2 mb-2">
                 <button class="btn btn-sm btn-secondary" onclick="startScanner()">開啟相機(連續掃描)</button>
                 <button class="btn btn-sm btn-warning" onclick="stopScanner()">關閉相機</button>
+            </div>
+            
+            <div class="border-top pt-2 px-2 text-start">
+                <label for="manualToolSelect" class="form-label text-secondary mb-1" style="font-size:0.8rem;">🚨 條碼污損模糊？改用手動點選：</label>
+                <select class="form-select form-select-sm" id="manualToolSelect" onchange="onManualToolSelect()">
+                    <option value="">-- 請選擇欲加入的工具 --</option>
+                </select>
             </div>
         </div>
     </div>
@@ -90,33 +94,67 @@
     let html5QrcodeScanner = null;
     let scannedToolIds = []; 
     let isProcessingScan = false;
+    let cachedToolsList = []; // 快取全廠工具資料供手動下拉選單用
 
     window.addEventListener('load', () => {
+        // 同步載入員工與工具
         fetch(GAS_WEB_APP_URL)
         .then(response => response.json())
         .then(data => {
-            const selectEl = document.getElementById('userId');
-            selectEl.innerHTML = '<option value="">-- 請選擇員工 --</option>';
+            // 填入員工選單
+            const selectUser = document.getElementById('userId');
+            selectUser.innerHTML = '<option value="">-- 請選擇員工 --</option>';
             if (data.success && data.users.length > 0) {
                 data.users.forEach(user => {
                     const option = document.createElement('option');
                     option.value = user.user_id;
                     option.text = `${user.user_name} (${user.user_id})`;
-                    selectEl.appendChild(option);
+                    selectUser.appendChild(option);
                 });
-            } else { selectEl.innerHTML = '<option value="">無法載入員工</option>'; }
+            } else { selectUser.innerHTML = '<option value="">無法載入員工</option>'; }
+
+            // 💡 快取工具清單並填入備用下拉選單
+            if (data.success && data.tools) {
+                cachedToolsList = data.tools;
+                updateManualToolDropdown();
+            }
         }).catch(err => { document.getElementById('userId').innerHTML = '<option value="">連線失敗</option>'; });
     });
 
-    // 💡 需求一：當選擇員工改變時，即時去後端撈取未歸還工具
+    // 💡 依據全廠工具更新手動下拉選單內容
+    function updateManualToolDropdown() {
+        const selectTool = document.getElementById('manualToolSelect');
+        selectTool.innerHTML = '<option value="">-- 請選擇欲加入的工具 --</option>';
+        cachedToolsList.forEach(t => {
+            const option = document.createElement('option');
+            option.value = t.tool_id;
+            option.text = `${t.tool_name} [${t.tool_id}] (${t.status})`;
+            selectTool.appendChild(option);
+        });
+    }
+
+    // 💡 當手動選擇工具下拉選單被觸發時的邏輯
+    function onManualToolSelect() {
+        const toolId = document.getElementById('manualToolSelect').value;
+        if (!toolId) return;
+
+        if (scannedToolIds.includes(toolId)) {
+            alert("此工具已存在於下方的清單中！");
+            document.getElementById('manualToolSelect').value = ""; // 重設選單
+            return;
+        }
+
+        // 直接調用原有的驗證與卡片生成機制
+        checkAndAddTool(toolId);
+        
+        // 渲染完後將下拉選單回復預設白字，以便下次可以重複點選別的
+        document.getElementById('manualToolSelect').value = "";
+    }
+
     function onUserChange() {
         const userId = document.getElementById('userId').value;
         const box = document.getElementById('userBorrowedBox');
-        
-        if (!userId) {
-            box.classList.add('d-none');
-            return;
-        }
+        if (!userId) { box.classList.add('d-none'); return; }
 
         box.classList.remove('d-none');
         box.innerHTML = '<div class="text-muted text-center fs-7"><span class="spinner-border spinner-border-sm me-1"></span>查詢未還工具中...</div>';
@@ -134,9 +172,7 @@
                     box.innerHTML = '<div class="text-success font-weight-bold text-center">👍 目前名下無借用未還工具</div>';
                 } else {
                     let html = '<div class="text-danger font-weight-bold mb-1">⚠️ 目前尚未歸還工具：</div><ul class="mb-0 ps-3 fs-7 text-dark">';
-                    data.tools.forEach(t => {
-                        html += `<li><strong>${t.tool_name}</strong> <span class="text-secondary">(${t.tool_id})</span></li>`;
-                    });
+                    data.tools.forEach(t => { html += `<li><strong>${t.tool_name}</strong> <span class="text-secondary">(${t.tool_id})</span></li>`; });
                     html += '</ul>';
                     box.innerHTML = html;
                 }
@@ -174,7 +210,7 @@
         const userId = document.getElementById('userId').value;
 
         if (action === "借出" && !userId) {
-            alert("請先選擇借用人，再開始掃描工具！");
+            alert("請先選擇借用人，再加入工具！");
             isProcessingScan = false; 
             return;
         }
@@ -275,7 +311,7 @@
             if (data.success) {
                 alert(data.message);
                 clearCart();
-                onUserChange(); // 💡 成功借還後，自動重整刷新此人的未還清單
+                onUserChange(); 
             } else { alert("❌ 失敗: " + data.message); }
         })
         .catch(error => { showLoading(false); alert("⚠️ 連線錯誤: " + error.message); });
