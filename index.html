@@ -15,7 +15,6 @@
             background: rgba(0,0,0,0.7); color: white; z-index: 9999;
             display: flex; justify-content: center; align-items: center; flex-direction: column;
         }
-        /* 調整卡片樣式以容納個別輸入框 */
         .tool-card { background: white; border-radius: 8px; padding: 12px; margin-bottom: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
         .tool-main-info { display: flex; align-items: center; margin-bottom: 8px; }
         .tool-card img { width: 60px; height: 60px; object-fit: contain; border-radius: 4px; margin-right: 12px; background: #eee; }
@@ -32,11 +31,11 @@
     <div class="row g-2 mb-3">
         <div class="col-6">
             <input type="radio" class="btn-check" name="action" id="btnCheckOut" value="借出" checked autocomplete="off">
-            <label class="btn btn-outline-danger w-100 action-btn d-flex align-items-center justify-content-center" for="btnCheckOut">【批次借出】</label>
+            <label class="btn btn-outline-danger w-100 action-btn d-flex align-items-center justify-content-center" for="btnCheckOut">進入【批次借出】</label>
         </div>
         <div class="col-6">
             <input type="radio" class="btn-check" name="action" id="btnCheckIn" value="歸還" autocomplete="off">
-            <label class="btn btn-outline-success w-100 action-btn d-flex align-items-center justify-content-center" for="btnCheckIn">【批次歸還】</label>
+            <label class="btn btn-outline-success w-100 action-btn d-flex align-items-center justify-content-center" for="btnCheckIn">進入【批次歸還】</label>
         </div>
     </div>
 
@@ -84,7 +83,7 @@
     const GAS_WEB_APP_URL = "https://script.google.com/macros/s/AKfycby33Sv74ikqHLdZrM3Eh5oEnW-m7vm23T24WVeaZ8kbUFrWyx7mo0KhtUmGcxqKWIcY7g/exec";
 
     let html5QrcodeScanner = null;
-    let scannedToolIds = []; // 購物車陣列
+    let scannedToolIds = []; 
     let isProcessingScan = false;
 
     window.addEventListener('load', () => {
@@ -109,13 +108,18 @@
         html5QrcodeScanner = new Html5Qrcode("reader");
         html5QrcodeScanner.start(
             { facingMode: "environment" },
-            { fps: 15, qrbox: { width: 230, height: 230 } },
+            { 
+                fps: 6, // 💡 優化一：降至 6 FPS，減輕手機處理器負擔，大幅降低畫面凍結率
+                qrbox: { width: 230, height: 230 } 
+            },
             (decodedText, decodedResult) => {
+                // 💡 優化二：加入嚴格的時間差冷卻鎖定與重複檢查
                 if (isProcessingScan) return;
                 if (scannedToolIds.includes(decodedText)) return; 
 
-                isProcessingScan = true;
+                isProcessingScan = true; // 開啟冷卻鎖定
                 if (navigator.vibrate) navigator.vibrate(100);
+                
                 checkAndAddTool(decodedText);
             },
             (errorMessage) => {}
@@ -134,7 +138,7 @@
 
         if (action === "借出" && !userId) {
             alert("請先選擇借用人，再開始掃描工具！");
-            isProcessingScan = false;
+            isProcessingScan = false; // 解除鎖定
             return;
         }
 
@@ -148,14 +152,20 @@
         })
         .then(response => response.json())
         .then(data => {
-            isProcessingScan = false;
-            if (data.success) { addToolToCart(data); } 
-            else { alert("⚠️ 預檢阻擋:\n" + data.message); }
+            if (data.success) { 
+                addToolToCart(data); 
+            } else { 
+                alert("⚠️ 預檢阻擋:\n" + data.message); 
+            }
+            // 💡 在網路通訊與渲染結束後，延遲 800 毫秒才允許下一次掃描，防止相機當機
+            setTimeout(() => { isProcessingScan = false; }, 800);
         })
-        .catch(error => { isProcessingScan = false; alert("連線錯誤: " + error.message); });
+        .catch(error => { 
+            alert("連線錯誤: " + error.message); 
+            setTimeout(() => { isProcessingScan = false; }, 800);
+        });
     }
 
-    // 將工具與獨立備註欄位整合進卡片中
     function addToolToCart(tool) {
         scannedToolIds.push(tool.tool_id);
         const cartList = document.getElementById('toolCartList');
@@ -171,7 +181,6 @@
             if(idMatch) displayImg = `https://drive.google.com/thumbnail?id=${idMatch[1]}&sz=s400`;
         }
 
-        // 💡 這裡將備註欄輸入框 (input) 包裹在每張卡片中，並給予獨立的 id
         card.innerHTML = `
             <div class="tool-main-info">
                 <img src="${displayImg}" alt="工具圖">
@@ -208,7 +217,6 @@
         document.getElementById('btnSubmitAll').disabled = scannedToolIds.length === 0;
     }
 
-    // 一鍵批次送出（提取各卡片內獨立的備註）
     function submitBatch() {
         const action = document.querySelector('input[name="action"]:checked').value;
         const userId = document.getElementById('userId').value;
@@ -218,24 +226,15 @@
             return;
         }
 
-        // 💡 收集每個工具ID及其專屬的輸入框備註內容
         const toolsPayload = scannedToolIds.map(id => {
             const remarkInput = document.getElementById(`remark-${id}`);
-            return {
-                tool_id: id,
-                remark: remarkInput ? remarkInput.value.trim() : ""
-            };
+            return { tool_id: id, remark: remarkInput ? remarkInput.value.trim() : "" };
         });
 
         showLoading(true, `正在批次寫入【${action}】中...`);
         stopScanner();
 
-        const payload = {
-            action: "批次確認送出",
-            current_mode: action,
-            tools: toolsPayload, // 送出結構化陣列
-            user_id: userId
-        };
+        const payload = { action: "批次確認送出", current_mode: action, tools: toolsPayload, user_id: userId };
 
         fetch(GAS_WEB_APP_URL, {
             method: "POST",
