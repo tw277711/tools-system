@@ -21,12 +21,13 @@
         .tool-card-info { flex-grow: 1; }
         .tool-card-title { font-weight: bold; margin-bottom: 2px; font-size: 1rem; }
         .tool-card-spec { font-size: 0.85rem; color: #6c757d; }
+        .user-status-box { background: #fff; border-radius: 8px; padding: 10px; font-size: 0.9rem; box-shadow: inset 0 0 4px rgba(0,0,0,0.05); }
     </style>
 </head>
 <body>
 
 <div class="container py-3" style="max-width: 500px;">
-    <h3 class="text-center mb-3 font-weight-bold text-primary">🛠️ 工具個別備註借還系統</h3>
+    <h3 class="text-center mb-3 font-weight-bold text-primary">🛠️ 工具批次借還系統</h3>
 
     <div class="row g-2 mb-3">
         <div class="col-6">
@@ -42,9 +43,13 @@
     <div class="card mb-3 shadow-sm">
         <div class="card-body py-2">
             <label for="userId" class="form-label font-weight-bold mb-1" id="userLabel">👤 選擇借用人</label>
-            <select class="form-select" id="userId">
+            <select class="form-select" id="userId" onchange="onUserChange()">
                 <option value="">載入員工清單中...</option>
             </select>
+            
+            <div id="userBorrowedBox" class="user-status-box mt-2 d-none">
+                <div class="text-muted text-center fs-7">正在查詢該員名下工具...</div>
+            </div>
         </div>
     </div>
 
@@ -79,7 +84,7 @@
 </div>
 
 <script>
-    // ⚠️ 請在此處貼上你從 Google Apps Script 複製的最新網頁應用程式網址
+    // ⚠️ 請貼上你從 GAS 複製的最新部署網址
     const GAS_WEB_APP_URL = "https://script.google.com/macros/s/AKfycby33Sv74ikqHLdZrM3Eh5oEnW-m7vm23T24WVeaZ8kbUFrWyx7mo0KhtUmGcxqKWIcY7g/exec";
 
     let html5QrcodeScanner = null;
@@ -103,23 +108,55 @@
         }).catch(err => { document.getElementById('userId').innerHTML = '<option value="">連線失敗</option>'; });
     });
 
+    // 💡 需求一：當選擇員工改變時，即時去後端撈取未歸還工具
+    function onUserChange() {
+        const userId = document.getElementById('userId').value;
+        const box = document.getElementById('userBorrowedBox');
+        
+        if (!userId) {
+            box.classList.add('d-none');
+            return;
+        }
+
+        box.classList.remove('d-none');
+        box.innerHTML = '<div class="text-muted text-center fs-7"><span class="spinner-border spinner-border-sm me-1"></span>查詢未還工具中...</div>';
+
+        fetch(GAS_WEB_APP_URL, {
+            method: "POST",
+            mode: "cors",
+            headers: { "Content-Type": "text/plain" },
+            body: JSON.stringify({ action: "查詢個人未還", user_id: userId })
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                if (data.tools.length === 0) {
+                    box.innerHTML = '<div class="text-success font-weight-bold text-center">👍 目前名下無借用未還工具</div>';
+                } else {
+                    let html = '<div class="text-danger font-weight-bold mb-1">⚠️ 目前尚未歸還工具：</div><ul class="mb-0 ps-3 fs-7 text-dark">';
+                    data.tools.forEach(t => {
+                        html += `<li><strong>${t.tool_name}</strong> <span class="text-secondary">(${t.tool_id})</span></li>`;
+                    });
+                    html += '</ul>';
+                    box.innerHTML = html;
+                }
+            } else { box.innerHTML = '<div class="text-danger fs-7">無法查詢未還資料</div>'; }
+        })
+        .catch(() => { box.innerHTML = '<div class="text-danger fs-7">連線超時</div>'; });
+    }
+
     function startScanner() {
         if(html5QrcodeScanner) return;
         html5QrcodeScanner = new Html5Qrcode("reader");
         html5QrcodeScanner.start(
             { facingMode: "environment" },
-            { 
-                fps: 6, // 💡 優化一：降至 6 FPS，減輕手機處理器負擔，大幅降低畫面凍結率
-                qrbox: { width: 230, height: 230 } 
-            },
+            { fps: 6, qrbox: { width: 230, height: 230 } },
             (decodedText, decodedResult) => {
-                // 💡 優化二：加入嚴格的時間差冷卻鎖定與重複檢查
                 if (isProcessingScan) return;
                 if (scannedToolIds.includes(decodedText)) return; 
 
-                isProcessingScan = true; // 開啟冷卻鎖定
+                isProcessingScan = true; 
                 if (navigator.vibrate) navigator.vibrate(100);
-                
                 checkAndAddTool(decodedText);
             },
             (errorMessage) => {}
@@ -138,7 +175,7 @@
 
         if (action === "借出" && !userId) {
             alert("請先選擇借用人，再開始掃描工具！");
-            isProcessingScan = false; // 解除鎖定
+            isProcessingScan = false; 
             return;
         }
 
@@ -152,18 +189,11 @@
         })
         .then(response => response.json())
         .then(data => {
-            if (data.success) { 
-                addToolToCart(data); 
-            } else { 
-                alert("⚠️ 預檢阻擋:\n" + data.message); 
-            }
-            // 💡 在網路通訊與渲染結束後，延遲 800 毫秒才允許下一次掃描，防止相機當機
+            if (data.success) { addToolToCart(data); } 
+            else { alert("⚠️ 預檢阻擋:\n" + data.message); }
             setTimeout(() => { isProcessingScan = false; }, 800);
         })
-        .catch(error => { 
-            alert("連線錯誤: " + error.message); 
-            setTimeout(() => { isProcessingScan = false; }, 800);
-        });
+        .catch(error => { alert("連線錯誤: " + error.message); setTimeout(() => { isProcessingScan = false; }, 800); });
     }
 
     function addToolToCart(tool) {
@@ -221,10 +251,7 @@
         const action = document.querySelector('input[name="action"]:checked').value;
         const userId = document.getElementById('userId').value;
 
-        if (action === "借出" && !userId) {
-            alert("請先選擇借用人！");
-            return;
-        }
+        if (action === "借出" && !userId) { alert("請先選擇借用人！"); return; }
 
         const toolsPayload = scannedToolIds.map(id => {
             const remarkInput = document.getElementById(`remark-${id}`);
@@ -248,9 +275,10 @@
             if (data.success) {
                 alert(data.message);
                 clearCart();
+                onUserChange(); // 💡 成功借還後，自動重整刷新此人的未還清單
             } else { alert("❌ 失敗: " + data.message); }
         })
-        .catch(error => { showLoading(false); alert("⚠️ 批次寫入連線錯誤: " + error.message); });
+        .catch(error => { showLoading(false); alert("⚠️ 連線錯誤: " + error.message); });
     }
 
     function showLoading(show, text = "") {
